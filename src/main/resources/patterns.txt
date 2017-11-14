@@ -8,3 +8,38 @@ $_GET,$_POST,$_COOKIE
 pg_escape_string,pg_escape_bytea
 pg_query,pg_send_query
 -
+SQL injection
+$_GET,$_POST,$_COOKIE
+db2_escape_string
+db2_exec
+-
+Cross site scripting
+$_GET,$_POST,$_COOKIE,$_REQUEST,$_FILES,$_SERVERS
+htmlentities,htmlspecialchars,strip_tags,urlencode,san_out
+echo,print,printf,die,error,exit
+-
+Cross site scripting
+$_GET,$_POST,$_COOKIE,$_REQUEST,$_FILES,$_SERVERS
+san_wdata,htmlentities,htmlspecialchars,strip_tags,urlencode
+file_put_contents
+-
+Cross site scripting
+$_GET,$_POST,$_COOKIE,$_REQUEST,$_FILES,$_SERVERS
+san_rdata,htmlentities,htmlspecialchars,strip_tags,urlencode
+file_get_contents
+-
+OS Command Injection
+$_GET,$_POST,$_COOKIE,$_REQUEST,$_FILE
+san_osci
+passthru,system,shell_exec,exec,pcntl_exec,popen
+-
+Source Code Disclosure
+$_GET,$_POST,$_COOKIE,$_REQUEST,$_FILE
+san_mix
+readfile
+-
+Remote/Local File Inclusion and/or Directory Traversal/Path Traversal
+$_GET,$_POST,$_COOKIE,$_REQUEST,$_FILE
+san_mix
+fopen,file_get_contents,file,copy,unlink,move_uploaded_file,imagecreatefromgd2,imagecreatefromgd2part,imagecreatefromgd,imagecreatefromgif,imagecreatefromjpeg,imagecreatefrompng,imagecreatefromstring,imagecreatefromwbmp,imagecreatefromxbm,imagecreatefromxpm,require,require_once,include,include_once
+-
