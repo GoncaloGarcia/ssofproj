@@ -16,6 +16,11 @@ public class Analyzer {
     private List<Pattern> patterns;
 
     /**
+     * A list of the names of the functions that sanitizes the data
+     */
+    private List<String> sanitizes;
+    
+    /**
      * The root node of the AST
      */
     private JsonNode root;
@@ -35,7 +40,11 @@ public class Analyzer {
      */
     private boolean isProgramVulnerable;
 
-
+    /**
+     * Stores if the string with encapsed variables is vulnerable
+     */
+    private boolean encapsedVulnerable;
+    
     /**
      * Constructor for Analyzer
      * @param patternFile The file containing the patterns that are used to
@@ -44,6 +53,7 @@ public class Analyzer {
     public Analyzer(String patternFile) {
         patterns = new LinkedList<Pattern>();
         buildPatternsList(patternFile);
+        sanitizes = new LinkedList<String>();
         isVariableVulnerable = new HashMap<>();
     }
 
@@ -78,8 +88,7 @@ public class Analyzer {
     public static void main(String[] args) {
 
         Analyzer analyzer = new Analyzer("patterns.txt");
-        analyzer.startAnalysis("safeslice.json");
-
+        analyzer.startAnalysis("slice2.json");
 
     }
 
@@ -118,11 +127,19 @@ public class Analyzer {
             boolean vulnerable = handleAssign(currentNode);
             //Sets the current vulnerability status of the analyzed variable to the status of what is assigned to it
             isVariableVulnerable.put(currentNode.get("left").get("name").asText(), vulnerable);
+        } else if(kind.equals("echo")){
+        	handleEcho(currentNode);
         }
         if (children.size() > index + 1) {
             analyze(index + 1);
         } else if (!isProgramVulnerable) {
             System.out.println("Program is safe");
+            if(!sanitizes.isEmpty()) {
+            	System.out.println("Sanitizes funtions: ");
+            	for(String s : sanitizes) {
+            		System.out.println("\t"+ s);
+            	}
+            }
         }
 
     }
@@ -147,10 +164,42 @@ public class Analyzer {
             return handleBin(right);
         } else if (kind.equals("call")) {
             return handleCall(right);
+        } else if (kind.equals("encapsed")) {
+        	return handleEncapsed(right);
         }
         return false;
     }
-
+    
+    /**
+     * Handles a string with encapsed variables. Checks if there are any tainted variable in the string
+     *
+     * @param node The node that contains the parameters necessary to evaluate this function call
+     * @return 
+     * @return the vulnerability status of the string.
+     * 
+     */
+    private boolean handleEncapsed(JsonNode node) {
+    	encapsedVulnerable = false;
+    	node.get("value").forEach(value -> { 
+    		if(value.get("kind").asText().equals("variable") && isVariableVulnerable.get(value.get("name").asText()) != null && isVariableVulnerable.get(value.get("name").asText()) ) {
+    			encapsedVulnerable = true;
+    		}
+    	});
+    	return encapsedVulnerable;
+    }
+    
+    /**
+     * Handles an expression of type echo.
+     *
+     * @param node The node that contains the parameters necessary to evaluate this assignment.
+     */
+    private void handleEcho(JsonNode node) {
+        for (Pattern pattern : patterns) {
+            verifySafeExecution(node.get("arguments").get(0), "echo", pattern);
+        }
+        return;
+    }
+    
     /**
      * Handles a call to a function.
      * Most calls should be used for sanitization or to target a sink
@@ -187,6 +236,7 @@ public class Analyzer {
             node.get("arguments").forEach(argument -> {
                 if (getNodeKind(argument).equals("variable")) {
                     isVariableVulnerable.put(argument.get("name").asText(), false);
+                    sanitizes.add(name);
                 }
             });
         }
@@ -201,13 +251,18 @@ public class Analyzer {
      * @param pattern The pattern to be checked
      */
     private void verifySafeExecution(JsonNode node, String name, Pattern pattern) {
-        if (pattern.getSinks().contains(name)) {
+    	if(name.equals("echo") && pattern.getSinks().contains(name)) {
+    		if(node.get("kind") != null && node.get("kind").asText().equals("offsetlookup")) {
+    			 isProgramVulnerable = true;
+                 System.out.println("Program is vulnerable to " + pattern.getName());
+    		}
+    	} else if (pattern.getSinks().contains(name)) {
             node.get("arguments").forEach(argument -> {
                 //If it's a variable and it's unsafe then the sink is compromised
-                if (getNodeKind(argument).equals("variable") && isVariableVulnerable.get(argument.get("name").asText())) {
-                    isProgramVulnerable = true;
+                if (getNodeKind(argument).equals("variable") && isVariableVulnerable.get(argument.get("name").asText()) != null && isVariableVulnerable.get(argument.get("name").asText())) {
+                   isProgramVulnerable = true;
                     System.out.println("Program is vulnerable to " + pattern.getName());
-                }
+                } 
             });
         }
     }
