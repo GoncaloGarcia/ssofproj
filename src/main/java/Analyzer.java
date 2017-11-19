@@ -3,8 +3,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.Reader;
 import java.util.*;
+import java.util.stream.Collectors;
 
 
 public class Analyzer {
@@ -19,7 +19,7 @@ public class Analyzer {
      * A list of the names of the functions that sanitizes the data
      */
     private List<String> sanitizes;
-    
+
     /**
      * The root node of the AST
      */
@@ -34,9 +34,9 @@ public class Analyzer {
 
     /**
      * Stores whether the program is vulnerable.
-     *  Defaults to false, which means the program is not vulnerable
-     *  and only changes once, which means the program cannot become
-     *  vulnerable and later safe.
+     * Defaults to false, which means the program is not vulnerable
+     * and only changes once, which means the program cannot become
+     * vulnerable and later safe.
      */
     private boolean isProgramVulnerable;
 
@@ -44,9 +44,16 @@ public class Analyzer {
      * Stores if the string with encapsed variables is vulnerable
      */
     private boolean encapsedVulnerable;
-    
+
+    /**
+     *  Stores the token that is being checked in the if if it's a string.
+     */
+    private String ifConditionTokenString;
+
+
     /**
      * Constructor for Analyzer
+     *
      * @param patternFile The file containing the patterns that are used to
      *                    evaluate the safety of the slice
      */
@@ -60,6 +67,7 @@ public class Analyzer {
 
     /**
      * Loads the pattern file into a List of Pattern objects.
+     *
      * @param patternFile The file containing the patterns that are used to
      *                    evaluate the safety of the slice
      */
@@ -75,25 +83,31 @@ public class Analyzer {
 
         while (scanner.hasNext()) {
             String line = scanner.nextLine();
-            if (line.equals("-")) patterns.add(new Pattern(name, entryPoints, sanitizers, sinks)); //When the delimiter is reached create the object
+            if (line.equals("-"))
+                patterns.add(new Pattern(name, entryPoints, sanitizers, sinks)); //When the delimiter is reached create the object
             else if (lineNumber % 5 == 0) name = line; //First line is always the name
-            else if (lineNumber % 5 == 1) entryPoints = Arrays.asList(line.split(",")); //Second line is always the entry points
-            else if (lineNumber % 5 == 2) sanitizers = Arrays.asList(line.split(",")); //Third line is always the sanitizers
+            else if (lineNumber % 5 == 1)
+                entryPoints = Arrays.asList(line.split(",")); //Second line is always the entry points
+            else if (lineNumber % 5 == 2)
+                sanitizers = Arrays.asList(line.split(",")); //Third line is always the sanitizers
             else if (lineNumber % 5 == 3) sinks = Arrays.asList(line.split(",")); //Fourth line is always the sinks
             lineNumber++;
         }
     }
 
 
+
+
     public static void main(String[] args) {
 
         Analyzer analyzer = new Analyzer("patterns.txt");
-        analyzer.startAnalysis("slice2.json");
+        analyzer.startAnalysis("slice8safe.json");
 
     }
 
     /**
      * Entry point for the Analysis
+     *
      * @param filename The name of the file containing the slice that is to be analyzed
      * @return True if the program is vulnerable and false if it is safe
      */
@@ -123,25 +137,117 @@ public class Analyzer {
         JsonNode currentNode = children.get(index);
 
         String kind = getNodeKind(currentNode);
-        if (kind.equals("assign")) {
-            boolean vulnerable = handleAssign(currentNode);
-            //Sets the current vulnerability status of the analyzed variable to the status of what is assigned to it
-            isVariableVulnerable.put(currentNode.get("left").get("name").asText(), vulnerable);
-        } else if(kind.equals("echo")){
-        	handleEcho(currentNode);
-        }
+        handleNodeKind(currentNode, kind);
         if (children.size() > index + 1) {
             analyze(index + 1);
         } else if (!isProgramVulnerable) {
             System.out.println("Program is safe");
-            if(!sanitizes.isEmpty()) {
-            	System.out.println("Sanitizes funtions: ");
-            	for(String s : sanitizes) {
-            		System.out.println("\t"+ s);
-            	}
+            if (!sanitizes.isEmpty()) {
+                System.out.println("Sanitizes funtions: ");
+                for (String s : sanitizes) {
+                    System.out.println("\t" + s);
+                }
             }
         }
 
+    }
+
+
+    /**
+     * Picks the correct code path for the given node based on the kind parameter
+     * @param currentNode The node that contains the parameters necessary to evaluate the code path
+     * @param kind The kind of operation of the line corresponding to this node
+     */
+    private void handleNodeKind(JsonNode currentNode, String kind) {
+        if (kind.equals("assign")) {
+            boolean vulnerable = handleAssign(currentNode);
+            //Sets the current vulnerability status of the analyzed variable to the status of what is assigned to it
+            isVariableVulnerable.put(currentNode.get("left").get("name").asText(), vulnerable);
+        } else if (kind.equals("echo")) {
+            handleEcho(currentNode);
+        } else if (kind.equals("if")) {
+            handleIf(currentNode);
+        } else if (kind.equals("while")) {
+            handleWhile(currentNode);
+        }
+    }
+
+
+    /**
+     * Handles a while loop.
+     * Since it's not possible to run the while loop and check the variables, it's necessary to figure out
+     * the number of times the content of the loop has to be iterated.
+     * To do that we run the loop N times and at each iteration we verify that a previously untainted variable has been tainted
+     * and that previously tainted variables remain tainted. If any of these conditions is broken, the iteration stops and the
+     * variables are evaluated as such.
+     * @param node The node that contains the parameters necessary to evaluate this loop
+     */
+    private void handleWhile(JsonNode node) {
+        Map<String, Boolean> prevIteration = new HashMap<>();
+        prevIteration.putAll(isVariableVulnerable);
+                                            //filter out untainted variables
+        Map<String, Boolean> prevTainted = isVariableVulnerable.entrySet().stream().filter(Map.Entry::getValue).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        do {
+            prevIteration.putAll(isVariableVulnerable);
+            prevTainted = isVariableVulnerable.entrySet().stream().filter(Map.Entry::getValue).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+            for (JsonNode children : node.get("body").get("children")) {
+                if (getNodeKind(children).equals("assign")) handleAssign(children);
+                else if(getNodeKind(children).equals("if")) handleIf(children);
+            }
+        }
+        while (!isVariableVulnerable.equals(prevIteration) && prevTainted.size() < (isVariableVulnerable.entrySet().stream().filter(Map.Entry::getValue).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue))).size());
+    }
+
+    /**
+     * Handles an if statement. Since the condition cannot be evalueated to figure out which code path is to be ran,
+     * both code paths are checked and the result is the worst case of both paths. To do that we add to the variables
+     * list any variable that is found in either code path and the vulnerability level of that variable is highest among
+     * each code path.
+     * @param node
+     */
+    private void handleIf(JsonNode node) {
+        Map<String, Boolean> oldVars = new HashMap<>();
+        Map<String, Boolean> bodyVars = new HashMap<>();
+        Map<String, Boolean> alternateVars = new HashMap<>();
+
+        //Specifically for slice 11 we verify if the condition checks against a string and store it in case
+        //that string is used to build a query in another variable
+        if(getBinType(node.get("test")).equals("==") && getNodeKind(node.get("test").get("right")).equals("string")){
+            ifConditionTokenString = node.get("test").get("right").get("value").asText();
+        }
+
+        oldVars.putAll(isVariableVulnerable);
+        boolean bodyResult = handleIfContent(node.get("body"));
+        bodyVars.putAll(isVariableVulnerable);
+        boolean alternateResult = handleIfContent(node.get("alternate"));
+        alternateVars.putAll(isVariableVulnerable);
+
+        oldVars.putAll(bodyVars);
+        oldVars.putAll(alternateVars);
+        for (String val : oldVars.keySet()) {
+            if (bodyVars.containsKey(val) && oldVars.containsKey(val)) {
+                oldVars.put(val, bodyVars.get(val) || alternateVars.get(val));
+            }
+        }
+        isVariableVulnerable = oldVars;
+        ifConditionTokenString = null;
+    }
+
+
+    /**
+     * Handles the Content of an if statement
+     * @param node The node that contains the parameters necessary to evaluate this statement
+     * @return The vulnerability level of the content of this if statement
+     */
+    private boolean handleIfContent(JsonNode node) {
+        if (node.asText().equals("null")) return false;
+        String kind = getNodeKind(node);
+        if(kind.equals("block")) {
+            for (JsonNode children : node.get("children")) {
+                if (getNodeKind(children).equals("assign")) return handleAssign(children);
+            }
+        } else if (kind.equals("if")) handleIf(node);
+        return false;
     }
 
     /**
@@ -150,44 +256,53 @@ public class Analyzer {
      * The right parameter is what will be assigned to the variable and needs to be checked.
      * This method will call will call the dedicated method for the type of expression of the right
      * parameter based on the 'kind' parameter of the JSON object.
+     * It will store the variable in the isVariableVulnerable map and map it to the return value of the correct handler
      *
      * @param node The node that contains the parameters necessary to evaluate this assignment.
      * @return The vulnerability status of the right parameter of the assignment expression.
      */
     private boolean handleAssign(JsonNode node) {
+        isVariableVulnerable.putIfAbsent(node.get("left").get("name").asText(), false);
+        boolean value = false;
+
         JsonNode right = node.get("right");
         String kind = getNodeKind(right);
-        //System.out.println(kind);
+
         if (kind.equals("offsetlookup")) {
-            return handleOffsetLookup(right);
+            value = handleOffsetLookup(right);
         } else if (kind.equals("bin")) {
-            return handleBin(right);
+            value = handleBin(right);
         } else if (kind.equals("call")) {
-            return handleCall(right);
+            value = handleCall(right);
+        } else if (kind.equals("variable")) {
+            String rightVarName = node.get("right").get("name").asText();
+            isVariableVulnerable.putIfAbsent(rightVarName, false);
+            boolean rightVarValue = isVariableVulnerable.get(rightVarName);
+            isVariableVulnerable.put(node.get("left").get("name").asText(), rightVarValue);
+            return rightVarValue;
         } else if (kind.equals("encapsed")) {
-        	return handleEncapsed(right);
+            value = handleEncapsed(right);
         }
-        return false;
+        isVariableVulnerable.put(node.get("left").get("name").asText(), value);
+        return value;
     }
-    
+
     /**
      * Handles a string with encapsed variables. Checks if there are any tainted variable in the string
      *
      * @param node The node that contains the parameters necessary to evaluate this function call
-     * @return 
      * @return the vulnerability status of the string.
-     * 
      */
     private boolean handleEncapsed(JsonNode node) {
-    	encapsedVulnerable = false;
-    	node.get("value").forEach(value -> { 
-    		if(value.get("kind").asText().equals("variable") && isVariableVulnerable.get(value.get("name").asText()) != null && isVariableVulnerable.get(value.get("name").asText()) ) {
-    			encapsedVulnerable = true;
-    		}
-    	});
-    	return encapsedVulnerable;
+        encapsedVulnerable = false;
+        node.get("value").forEach(value -> {
+            if (value.get("kind").asText().equals("variable") && isVariableVulnerable.get(value.get("name").asText()) != null && isVariableVulnerable.get(value.get("name").asText())) {
+                encapsedVulnerable = true;
+            }
+        });
+        return encapsedVulnerable;
     }
-    
+
     /**
      * Handles an expression of type echo.
      *
@@ -199,7 +314,7 @@ public class Analyzer {
         }
         return;
     }
-    
+
     /**
      * Handles a call to a function.
      * Most calls should be used for sanitization or to target a sink
@@ -215,6 +330,8 @@ public class Analyzer {
     private boolean handleCall(JsonNode node) {
         JsonNode what = node.get("what");
         String name = what.get("name").asText();
+        if (name.equals("substr")) return handleSubstr(node);
+
         for (Pattern pattern : patterns) {
             verifySanitization(node, name, pattern);
             verifySafeExecution(node, name, pattern);
@@ -222,13 +339,27 @@ public class Analyzer {
         return false;
     }
 
+    /**
+     * Handles a call to substr.
+     * Simply adds the variable to the variables list and assigns it the correct vulnerability level
+     * @param node
+     * @return
+     */
+    private boolean handleSubstr(JsonNode node) {
+        JsonNode arguments = node.get("arguments");
+        JsonNode variable = arguments.get(0);
+        isVariableVulnerable.putIfAbsent(variable.get("name").asText(), false);
+        return isVariableVulnerable.get(variable.get("name").asText());
+    }
+
 
     /**
      * Verifies if the function call is a sanitization function.
      * To do that it checks if a pattern's sanitization list contains the name of the
      * function
-     * @param node The node that contains the parameters necessary to evaluate this function call
-     * @param name The name of the function
+     *
+     * @param node    The node that contains the parameters necessary to evaluate this function call
+     * @param name    The name of the function
      * @param pattern The pattern to be checked
      */
     private void verifySanitization(JsonNode node, String name, Pattern pattern) {
@@ -246,23 +377,24 @@ public class Analyzer {
      * Verifies if the function call is targetting an unsafe sink
      * To do that it checks if a pattern's sink list contains the name of the
      * function
-     * @param node The node that contains the parameters necessary to evaluate this function call
-     * @param name The name of the function
+     *
+     * @param node    The node that contains the parameters necessary to evaluate this function call
+     * @param name    The name of the function
      * @param pattern The pattern to be checked
      */
     private void verifySafeExecution(JsonNode node, String name, Pattern pattern) {
-    	if(name.equals("echo") && pattern.getSinks().contains(name)) {
-    		if(node.get("kind") != null && node.get("kind").asText().equals("offsetlookup")) {
-    			 isProgramVulnerable = true;
-                 System.out.println("Program is vulnerable to " + pattern.getName());
-    		}
-    	} else if (pattern.getSinks().contains(name)) {
+        if (name.equals("echo") && pattern.getSinks().contains(name)) {
+            if (node.get("kind") != null && node.get("kind").asText().equals("offsetlookup")) {
+                isProgramVulnerable = true;
+                System.out.println("Program is vulnerable to " + pattern.getName());
+            }
+        } else if (pattern.getSinks().contains(name)) {
             node.get("arguments").forEach(argument -> {
                 //If it's a variable and it's unsafe then the sink is compromised
                 if (getNodeKind(argument).equals("variable") && isVariableVulnerable.get(argument.get("name").asText()) != null && isVariableVulnerable.get(argument.get("name").asText())) {
-                   isProgramVulnerable = true;
+                    isProgramVulnerable = true;
                     System.out.println("Program is vulnerable to " + pattern.getName());
-                } 
+                }
             });
         }
     }
@@ -271,6 +403,7 @@ public class Analyzer {
     /**
      * Handles a binary operation.
      * Basically checks the type of the bin parameter and picks the appropriate handler
+     *
      * @param node The node that contains the parameters necessary to evaluate this binary operation
      * @return The vulnerability status of the result of the binary operation.
      */
@@ -286,7 +419,8 @@ public class Analyzer {
      * Outer method to deal with concatenatenation.
      * Analyzes each side separately and if either is unsafe then the result
      * of the concatenation is unsafe
-     * @param left The left operand of the concatenation
+     *
+     * @param left  The left operand of the concatenation
      * @param right The right operand of the concatenation
      * @return The vulnerability status of the result of the concatenation
      */
@@ -298,6 +432,7 @@ public class Analyzer {
      * Handles each side of a concatenation operation.
      * Calculates the appropriate vulnarability status based on the kind parameter
      * of the node
+     *
      * @param node The node that contains the parameters necessary to evaluate this binary operand
      * @return
      */
@@ -307,6 +442,7 @@ public class Analyzer {
             return handleBin(node);
             //Strings are always safe because they don't rely on the user's input.
         } else if (kind.equals("string")) {
+            if(ifConditionTokenString != null && node.get("value").asText().equals(ifConditionTokenString)) return true;
             return false;
         } else if (kind.equals("variable")) {
             return isVariableVulnerable.get(node.get("name").asText());
@@ -319,6 +455,7 @@ public class Analyzer {
 
     /**
      * Helper method to get the type of a bin operation
+     *
      * @param node
      * @return
      */
@@ -331,6 +468,7 @@ public class Analyzer {
      * Offset lookup is something like $_GET['abc']
      * To see if it is vulnerable all that's necessary is to verify is the name
      * of the method is contained in the EntryPoints of any pattern.
+     *
      * @param node The node that contains the parameters necessary to evaluate this lookup
      * @return
      */
@@ -354,6 +492,7 @@ public class Analyzer {
 
     /**
      * Helper method to get the kind parameter of the nodes
+     *
      * @param node
      * @return
      */
